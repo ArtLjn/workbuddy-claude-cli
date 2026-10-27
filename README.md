@@ -204,6 +204,7 @@ CI 在 macOS、Windows、Linux 上运行检查；本机真实 WorkBuddy 账号�
 - [lib/config.mjs](lib/config.mjs)、[lib/identity.mjs](lib/identity.mjs)：配置与客户端版本
 - [test/](test/)：协议与 CLI 回归测试
 - [package.json](package.json)：npm 元数据、发布文件清单和开发命令
+- [.github/workflows/ci.yml](.github/workflows/ci.yml)：三平台检查；[.gitattributes](.gitattributes) 统一源码换行
 
 ## 来源与许可
 
