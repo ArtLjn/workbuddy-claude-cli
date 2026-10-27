@@ -1,7 +1,7 @@
 # workbuddy-claude-cli
 
 **支持 Claude CLI（Claude Code）接入 WorkBuddy 模型。** 一条命令安装，使用
-`workbuddy-claude-cli` 启动本地 Anthropic Messages API 兼容代理，复用 WorkBuddy 桌面 App 登录态。
+`wcc` 启动本地 Anthropic Messages API 兼容代理，复用 WorkBuddy 桌面 App 登录态。
 
 原理：Claude Code 说 Anthropic Messages API，WorkBuddy 上游说 OpenAI Chat Completions。
 本代理在 `127.0.0.1` 上把两边互相翻译，复用 WorkBuddy 桌面 App 的登录态，
@@ -23,8 +23,8 @@ npm install -g workbuddy-claude-cli
 安装后启动：
 
 ```sh
-workbuddy-claude-cli
-# 或 workbuddy-claude-cli start
+wcc
+# 或 wcc start
 ```
 
 也可以免全局安装直接运行：
@@ -33,20 +33,32 @@ workbuddy-claude-cli
 npx workbuddy-claude-cli
 ```
 
-默认监听 `http://127.0.0.1:3456`，按 `Ctrl+C` 停止。代理需要在使用 Claude CLI 期间保持运行。
-这个地址提供 API，不是网页界面。
+默认监听 `http://127.0.0.1:3456`，保持前台运行。代理需要在使用 Claude CLI 期间保持运行。
+这个地址提供 API，不是网页界面。升级到新版也使用同一条安装命令。
+
+停止时按 `Ctrl+C`，或者在另一个终端执行：
+
+```sh
+wcc stop
+```
 
 ## CLI 命令
 
 ```sh
-workbuddy-claude-cli start       # 启动代理，省略 start 也可
-workbuddy-claude-cli check       # 登录状态与当前可用模型
-workbuddy-claude-cli env         # 打印 Claude CLI 环境变量示例
-workbuddy-claude-cli --version   # 版本号
-workbuddy-claude-cli --help      # 帮助
+wcc start       # 启动代理，直接运行 wcc 也可
+wcc stop        # 停止代理，未运行时正常提示
+wcc check       # 登录状态与当前可用模型
+wcc env         # 打印 Claude CLI 环境变量示例
+wcc --version   # 版本号
+wcc --help      # 帮助
 ```
 
-原来的 `--check`、`--status`、`--print-env` 参数仍然可用。
+原来的长命令 `workbuddy-claude-cli` 以及 `--check`、`--status`、`--print-env` 参数仍然可用；
+例如 `workbuddy-claude-cli stop` 等同于 `wcc stop`。
+
+如果启动时设置了 `WORKBUDDY_PROXY_PORT` 或 `WORKBUDDY_CLAUDE_HOME`，停止时也要使用相同的值。
+停止不会退出 WorkBuddy App 或删除登录凭据。升级前已经启动的旧版代理，请先用 `Ctrl+C` 关闭，
+再用新版 `wcc` 启动，之后就能使用 `wcc stop`。
 
 ## 从源码启动
 
@@ -60,7 +72,7 @@ node server.mjs
 
 ## 接入 Claude CLI（Claude Code）
 
-先运行 `workbuddy-claude-cli check` 选择当前账号可用的模型 id。下面的例子使用默认模型
+先运行 `wcc check` 选择当前账号可用的模型 id。下面的例子使用默认模型
 `deepseek-v4.1-flash`，也可以替换成列表中的其他模型。
 
 ### 方式一：macOS / Linux，只对当前终端生效
@@ -136,14 +148,19 @@ DeepSeek 配置。
 macOS / Linux 更换端口示例：
 
 ```sh
-WORKBUDDY_PROXY_PORT=3457 workbuddy-claude-cli
+WORKBUDDY_PROXY_PORT=3457 wcc
+# 在另一个终端停止同一个端口：
+WORKBUDDY_PROXY_PORT=3457 wcc stop
 ```
 
 Windows PowerShell：
 
 ```powershell
 $env:WORKBUDDY_PROXY_PORT = '3457'
-workbuddy-claude-cli
+wcc
+# 在另一个终端也设置相同端口后停止：
+$env:WORKBUDDY_PROXY_PORT = '3457'
+wcc stop
 ```
 
 更换端口后，Claude CLI 的 `ANTHROPIC_BASE_URL` 也需要改为对应地址。
@@ -180,6 +197,7 @@ curl http://127.0.0.1:3456/v1/models
 
 - 只监听本机回环地址，并校验 `Host`/`Origin`，降低 DNS rebinding 风险。
 - 不记录 access token / refresh token；刷新副本写在 `~/.workbuddy-claude/`，权限 0600。
+- 运行控制文件同样限制为本机用户读写，按端口记录随机停止令牌；`stop` 通过本机接口关闭代理。
 - 这是第三方兼容层，与腾讯/WorkBuddy/Anthropic 均无关联。请遵守 WorkBuddy 的服务
   条款，仅供个人学习与研究使用，后果自负。
 
@@ -201,6 +219,7 @@ CI 在 macOS、Windows、Linux 上运行检查；本机真实 WorkBuddy 账号�
 - [lib/anthropic.mjs](lib/anthropic.mjs)：Anthropic / OpenAI 协议转换
 - [lib/upstream.mjs](lib/upstream.mjs)：WorkBuddy 请求、目录和错误处理
 - [lib/credential.mjs](lib/credential.mjs)：桌面登录态与刷新副本
+- [lib/service.mjs](lib/service.mjs)：运行状态与停止控制
 - [lib/config.mjs](lib/config.mjs)、[lib/identity.mjs](lib/identity.mjs)：配置与客户端版本
 - [test/](test/)：协议与 CLI 回归测试
 - [package.json](package.json)：npm 元数据、发布文件清单和开发命令

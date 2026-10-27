@@ -14,7 +14,8 @@ function run(...args) {
 test('CLI 帮助不启动服务', () => {
   const result = run('--help')
   assert.equal(result.status, 0, result.stderr)
-  assert.match(result.stdout, /workbuddy-claude-cli \[start\|check\|env/u)
+  assert.match(result.stdout, /wcc \[start\|stop\|check\|env/u)
+  assert.match(result.stdout, /兼容命令: workbuddy-claude-cli/u)
 })
 
 test('CLI 版本与发布包一致', () => {

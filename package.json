@@ -1,6 +1,6 @@
 {
   "name": "workbuddy-claude-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "支持 Claude CLI 接入 WorkBuddy 模型的本地 Anthropic Messages API 兼容代理",
   "license": "MIT",
@@ -20,6 +20,7 @@
     "proxy"
   ],
   "bin": {
+    "wcc": "server.mjs",
     "workbuddy-claude-cli": "server.mjs"
   },
   "files": [
@@ -38,6 +39,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
+    "stop": "node server.mjs stop",
     "check": "node server.mjs --check",
     "test": "node --test",
     "lint": "eslint .",

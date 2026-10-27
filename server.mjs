@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // 本地 Anthropic Messages API 代理：把 Claude Code 的请求转给 WorkBuddy。
-import { timingSafeEqual } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { collectMessage, estimateTokens, toOpenAIChat, translateStream } from './lib/anthropic.mjs'
 import { VARIANT, config, debugLog, log } from './lib/config.mjs'
 import { credentialStatus, resolveCredential } from './lib/credential.mjs'
+import { registerService, STOP_PATH, stopService, unregisterService } from './lib/service.mjs'
 import { UpstreamError, chatStream, ensureCatalog, knownModelIds } from './lib/upstream.mjs'
 
 const BODY_LIMIT = 64 * 1024 * 1024
@@ -306,7 +307,7 @@ async function handleModels(req, res, pathname) {
   })
 }
 
-async function handle(req, res) {
+async function handle(req, res, control) {
   if (!hostAllowed(req.headers.host)) {
     sendError(res, 403, 'permission_error', 'Host 必须是本机回环地址')
     return
@@ -315,12 +316,23 @@ async function handle(req, res) {
     sendError(res, 403, 'permission_error', 'Origin 必须是本机回环地址')
     return
   }
+  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
+  const pathname = url.pathname.replace(/\/+$/u, '') || '/'
+
+  if (req.method === 'POST' && pathname === STOP_PATH) {
+    const token = req.headers['x-wcc-stop-token']
+    if (typeof token !== 'string' || !safeEqual(token, control.token)) {
+      sendError(res, 403, 'permission_error', '停止代理需要本机控制令牌')
+      return
+    }
+    res.once('finish', control.shutdown)
+    sendJson(res, 200, { ok: true })
+    return
+  }
   if (!authorized(req)) {
     sendError(res, 401, 'authentication_error', '代理令牌不正确')
     return
   }
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
-  const pathname = url.pathname.replace(/\/+$/u, '') || '/'
 
   if (req.method === 'GET' && (pathname === '/healthz' || pathname === '/health')) {
     const status = await credentialStatus()
@@ -353,8 +365,11 @@ async function handle(req, res) {
 }
 
 function startServer() {
+  const token = randomBytes(32).toString('hex')
+  let registration
+  let shuttingDown = false
   const server = createServer((req, res) => {
-    handle(req, res).catch((error) => {
+    handle(req, res, { token, shutdown }).catch((error) => {
       debugLog('未处理异常:', error)
       if (!res.headersSent) sendError(res, 500, 'api_error', `代理内部错误：${String(error)}`)
       else res.end()
@@ -369,7 +384,17 @@ function startServer() {
     process.exitCode = 1
   })
   server.listen(config.port, config.host, async () => {
-    log(`监听 http://${config.host}:${config.port}（地区：${VARIANT}）`)
+    registration = registerService(server.address(), token)
+    try {
+      await registration
+    } catch (error) {
+      console.error('[workbuddy-claude] 保存运行状态失败:', error.message)
+      server.close()
+      process.exitCode = 1
+      return
+    }
+    if (shuttingDown) return
+    log(`监听 http://${config.host}:${server.address().port}（地区：${VARIANT}）`)
     const status = await credentialStatus()
     if (status.state === 'signed-in') {
       log(`WorkBuddy 账号：${status.nickname ?? status.uid ?? '已登录'}`)
@@ -388,9 +413,20 @@ function startServer() {
     log('  ANTHROPIC_AUTH_TOKEN=workbuddy-local')
     log(`  ANTHROPIC_MODEL=${config.defaultModel}`)
   })
-  const shutdown = () => {
+  function shutdown() {
+    if (shuttingDown) return
+    shuttingDown = true
     log('正在关闭代理…')
-    server.close(() => process.exit(0))
+    server.close(async () => {
+      try {
+        await registration
+        await unregisterService(token)
+        process.exit(0)
+      } catch (error) {
+        console.error('[workbuddy-claude] 清理运行状态失败:', error.message)
+        process.exit(1)
+      }
+    })
     server.closeAllConnections()
   }
   process.on('SIGINT', shutdown)
@@ -433,15 +469,25 @@ function printEnv() {
 const args = process.argv.slice(2)
 const command = args[0] ?? 'start'
 if (args.length > 1) {
-  console.error('一次只接受一个命令；运行 workbuddy-claude-cli --help 查看用法')
+  console.error('一次只接受一个命令；运行 wcc --help 查看用法')
   process.exitCode = 1
 } else if (command === 'check' || command === '--check' || command === '--status') {
   await printStatus()
 } else if (command === 'env' || command === '--print-env') {
   printEnv()
+} else if (command === 'stop') {
+  try {
+    const stopped = await stopService()
+    console.log(stopped ? '代理已停止' : `未发现运行中的代理（端口 ${config.port}）`)
+  } catch (error) {
+    console.error('停止代理失败:', error.message)
+    process.exitCode = 1
+  }
 } else if (command === 'help' || command === '--help' || command === '-h') {
-  console.log('用法: workbuddy-claude-cli [start|check|env|--version|--help]')
+  console.log('用法: wcc [start|stop|check|env|--version|--help]')
+  console.log('兼容命令: workbuddy-claude-cli')
   console.log('  start       启动本地代理（默认命令）')
+  console.log('  stop        停止本机运行中的代理')
   console.log('  check       打印登录状态与可用模型（也支持 --check）')
   console.log('  env         打印 Claude CLI 环境变量示例（也支持 --print-env）')
   console.log('  --version   打印版本号')
@@ -451,6 +497,6 @@ if (args.length > 1) {
 } else if (command === 'start') {
   startServer()
 } else {
-  console.error(`未知命令：${command}；运行 workbuddy-claude-cli --help 查看用法`)
+  console.error(`未知命令：${command}；运行 wcc --help 查看用法`)
   process.exitCode = 1
 }
