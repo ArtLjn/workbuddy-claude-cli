@@ -16,6 +16,7 @@ test('CLI 帮助不启动服务', () => {
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /wcc \[start\|stop\|check\|env/u)
   assert.match(result.stdout, /兼容命令: workbuddy-claude-cli/u)
+  assert.match(result.stdout, /--foreground/u)
 })
 
 test('CLI 版本与发布包一致', () => {
@@ -35,7 +36,7 @@ test('CLI 新旧环境变量命令兼容', () => {
 })
 
 test('CLI 拒绝未知命令和多余参数，避免意外启动服务', () => {
-  for (const args of [['strat'], ['start', '--unknown']]) {
+  for (const args of [['strat'], ['start', '--unknown'], ['stop', '--foreground']]) {
     const result = run(...args)
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stderr, /--help/u)

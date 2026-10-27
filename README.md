@@ -33,32 +33,43 @@ wcc
 npx workbuddy-claude-cli
 ```
 
-默认监听 `http://127.0.0.1:3456`，保持前台运行。代理需要在使用 Claude CLI 期间保持运行。
-这个地址提供 API，不是网页界面。升级到新版也使用同一条安装命令。
+默认监听 `http://127.0.0.1:3456`。`wcc` / `wcc start` 默认后台运行，启动成功后立即返回，
+可以关闭终端。这个地址提供 API，不是网页界面。升级到新版也使用同一条安装命令。
 
-停止时按 `Ctrl+C`，或者在另一个终端执行：
+停止后台代理：
 
 ```sh
 wcc stop
 ```
 
+启动时会打印日志路径，默认是 `~/.workbuddy-claude/proxy-3456.log`。
+如果需要在终端直接查看日志，可以前台运行：
+
+```sh
+wcc --foreground
+# 或 wcc start --foreground，按 Ctrl+C 停止
+```
+
+后台运行不等于开机自启，重启电脑后需要重新执行 `wcc`。
+
 ## CLI 命令
 
 ```sh
-wcc start       # 启动代理，直接运行 wcc 也可
+wcc start       # 后台启动，直接运行 wcc 也可，启动后可关闭终端
 wcc stop        # 停止代理，未运行时正常提示
 wcc check       # 登录状态与当前可用模型
 wcc env         # 打印 Claude CLI 环境变量示例
 wcc --version   # 版本号
 wcc --help      # 帮助
+wcc --foreground  # 前台运行，按 Ctrl+C 停止
 ```
 
 原来的长命令 `workbuddy-claude-cli` 以及 `--check`、`--status`、`--print-env` 参数仍然可用；
 例如 `workbuddy-claude-cli stop` 等同于 `wcc stop`。
 
 如果启动时设置了 `WORKBUDDY_PROXY_PORT` 或 `WORKBUDDY_CLAUDE_HOME`，停止时也要使用相同的值。
-停止不会退出 WorkBuddy App 或删除登录凭据。升级前已经启动的旧版代理，请先用 `Ctrl+C` 关闭，
-再用新版 `wcc` 启动，之后就能使用 `wcc stop`。
+停止不会退出 WorkBuddy App 或删除登录凭据。已有旧版代理运行时，请先用 `wcc stop` 或原终端的
+`Ctrl+C` 关闭，再用新版 `wcc` 后台启动。
 
 ## 从源码启动
 
@@ -77,7 +88,7 @@ node server.mjs
 
 ### 方式一：macOS / Linux，只对当前终端生效
 
-保持代理运行，另开终端执行：
+先运行 `wcc` 启动后台代理，再在终端执行：
 
 ```sh
 export ANTHROPIC_BASE_URL="http://127.0.0.1:3456"
@@ -149,7 +160,7 @@ macOS / Linux 更换端口示例：
 
 ```sh
 WORKBUDDY_PROXY_PORT=3457 wcc
-# 在另一个终端停止同一个端口：
+# 停止同一个端口：
 WORKBUDDY_PROXY_PORT=3457 wcc stop
 ```
 
@@ -158,8 +169,7 @@ Windows PowerShell：
 ```powershell
 $env:WORKBUDDY_PROXY_PORT = '3457'
 wcc
-# 在另一个终端也设置相同端口后停止：
-$env:WORKBUDDY_PROXY_PORT = '3457'
+# 同一终端可直接停止；另开终端则需要重新设置相同端口：
 wcc stop
 ```
 
@@ -220,6 +230,7 @@ CI 在 macOS、Windows、Linux 上运行检查；本机真实 WorkBuddy 账号�
 - [lib/upstream.mjs](lib/upstream.mjs)：WorkBuddy 请求、目录和错误处理
 - [lib/credential.mjs](lib/credential.mjs)：桌面登录态与刷新副本
 - [lib/service.mjs](lib/service.mjs)：运行状态与停止控制
+- [lib/daemon.mjs](lib/daemon.mjs)：后台进程、启动确认和日志输出
 - [lib/config.mjs](lib/config.mjs)、[lib/identity.mjs](lib/identity.mjs)：配置与客户端版本
 - [test/](test/)：协议与 CLI 回归测试
 - [package.json](package.json)：npm 元数据、发布文件清单和开发命令

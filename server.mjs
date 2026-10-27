@@ -3,9 +3,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { fileURLToPath } from 'node:url'
 import { collectMessage, estimateTokens, toOpenAIChat, translateStream } from './lib/anthropic.mjs'
 import { VARIANT, config, debugLog, log } from './lib/config.mjs'
 import { credentialStatus, resolveCredential } from './lib/credential.mjs'
+import { startBackground } from './lib/daemon.mjs'
 import { registerService, STOP_PATH, stopService, unregisterService } from './lib/service.mjs'
 import { UpstreamError, chatStream, ensureCatalog, knownModelIds } from './lib/upstream.mjs'
 
@@ -364,6 +366,10 @@ async function handle(req, res, control) {
   sendError(res, 404, 'not_found_error', `没有路由：${req.method} ${pathname}`)
 }
 
+function notifyLauncher(message) {
+  if (process.connected && typeof process.send === 'function') process.send(message)
+}
+
 function startServer() {
   const token = randomBytes(32).toString('hex')
   let registration
@@ -376,8 +382,13 @@ function startServer() {
     })
   })
   server.on('error', (error) => {
+    const message =
+      error.code === 'EADDRINUSE'
+        ? `端口 ${config.port} 已被占用；用 WORKBUDDY_PROXY_PORT 换一个端口`
+        : `启动失败：${error.message}`
+    notifyLauncher({ type: 'wcc-error', message })
     if (error.code === 'EADDRINUSE') {
-      console.error(`端口 ${config.port} 已被占用；用 WORKBUDDY_PROXY_PORT 换一个端口`)
+      console.error(message)
     } else {
       console.error('[workbuddy-claude] 启动失败:', error)
     }
@@ -388,12 +399,14 @@ function startServer() {
     try {
       await registration
     } catch (error) {
+      notifyLauncher({ type: 'wcc-error', message: `保存运行状态失败：${error.message}` })
       console.error('[workbuddy-claude] 保存运行状态失败:', error.message)
       server.close()
       process.exitCode = 1
       return
     }
     if (shuttingDown) return
+    notifyLauncher({ type: 'wcc-ready', host: config.host, port: server.address().port })
     log(`监听 http://${config.host}:${server.address().port}（地区：${VARIANT}）`)
     const status = await credentialStatus()
     if (status.state === 'signed-in') {
@@ -468,7 +481,7 @@ function printEnv() {
 
 const args = process.argv.slice(2)
 const command = args[0] ?? 'start'
-if (args.length > 1) {
+if (args.length > 1 && !(command === 'start' && args.length === 2 && args[1] === '--foreground')) {
   console.error('一次只接受一个命令；运行 wcc --help 查看用法')
   process.exitCode = 1
 } else if (command === 'check' || command === '--check' || command === '--status') {
@@ -484,18 +497,29 @@ if (args.length > 1) {
     process.exitCode = 1
   }
 } else if (command === 'help' || command === '--help' || command === '-h') {
-  console.log('用法: wcc [start|stop|check|env|--version|--help]')
+  console.log('用法: wcc [start|stop|check|env|--foreground|--version|--help]')
   console.log('兼容命令: workbuddy-claude-cli')
-  console.log('  start       启动本地代理（默认命令）')
+  console.log('  start       后台启动本地代理（默认命令，可关闭终端）')
   console.log('  stop        停止本机运行中的代理')
   console.log('  check       打印登录状态与可用模型（也支持 --check）')
   console.log('  env         打印 Claude CLI 环境变量示例（也支持 --print-env）')
   console.log('  --version   打印版本号')
+  console.log('  --foreground  前台运行，按 Ctrl+C 停止（也支持 start --foreground）')
 } else if (command === '--version' || command === '-v') {
   const metadata = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'))
   console.log(metadata.version)
-} else if (command === 'start') {
+} else if (command === '--foreground' || (command === 'start' && args[1] === '--foreground')) {
   startServer()
+} else if (command === 'start') {
+  try {
+    const started = await startBackground(fileURLToPath(import.meta.url))
+    console.log(`代理已在后台启动：http://${started.host}:${started.port}`)
+    console.log(`日志：${started.logPath}`)
+    console.log('停止：wcc stop')
+  } catch (error) {
+    console.error('后台启动失败:', error.message)
+    process.exitCode = 1
+  }
 } else {
   console.error(`未知命令：${command}；运行 wcc --help 查看用法`)
   process.exitCode = 1

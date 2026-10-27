@@ -5,7 +5,7 @@ import { once } from 'node:events'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer, request } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { setTimeout } from 'node:timers/promises'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -52,6 +52,7 @@ async function fixture(t) {
   }
   const children = []
   t.after(async () => {
+    await run(env, 'stop').done
     for (const server of children) {
       if (server.child.exitCode === null) server.child.kill('SIGTERM')
       await server.done
@@ -62,8 +63,8 @@ async function fixture(t) {
     env,
     port,
     statePath: join(directory, `service-${port}.json`),
-    async start(command = 'start') {
-      const server = run(env, ...(command === '' ? [] : [command]))
+    async start(...args) {
+      const server = run(env, ...(args.length === 0 ? ['--foreground'] : args))
       children.push(server)
       for (let attempt = 0; attempt < 400; attempt++) {
         if (server.output().includes('监听 http://')) return server
@@ -88,10 +89,10 @@ function http(port, { path = '/health', method = 'GET', headers = {} } = {}) {
   })
 }
 
-test('默认启动、控制令牌校验、CLI 停止和重复停止', { timeout: 20_000 }, async (t) => {
+test('前台启动、控制令牌校验、CLI 停止和重复停止', { timeout: 20_000 }, async (t) => {
   const app = await fixture(t)
   app.env.WORKBUDDY_PROXY_TOKEN = 'test-proxy-token'
-  const server = await app.start('')
+  const server = await app.start()
   const state = JSON.parse(await readFile(app.statePath, 'utf8'))
   assert.equal(state.port, app.port)
   if (process.platform !== 'win32') assert.equal((await stat(app.statePath)).mode & 0o777, 0o600)
@@ -120,6 +121,40 @@ test('默认启动、控制令牌校验、CLI 停止和重复停止', { timeout:
   const repeated = await run(app.env, 'stop').done
   assert.equal(repeated.code, 0, repeated.stderr)
   assert.match(repeated.stdout, /未发现运行中的代理/u)
+})
+
+test(
+  '默认命令和 start 后台启动，启动器退出后服务仍可用且能停止',
+  { timeout: 25_000 },
+  async (t) => {
+    for (const args of [[], ['start']]) {
+      const app = await fixture(t)
+      if (args.length > 0) {
+        app.env.WORKBUDDY_CLAUDE_HOME = relative(process.cwd(), app.env.WORKBUDDY_CLAUDE_HOME)
+      }
+      const launched = await run(app.env, ...args).done
+      assert.equal(launched.code, 0, launched.stderr)
+      assert.match(launched.stdout, /代理已在后台启动/u)
+      assert.match(launched.stdout, /日志：/u)
+      assert.equal(await http(app.port), 200)
+      const logPath = join(app.env.WORKBUDDY_CLAUDE_HOME, `proxy-${app.port}.log`)
+      assert.match(await readFile(logPath, 'utf8'), /监听 http:\/\//u)
+      if (process.platform !== 'win32') assert.equal((await stat(logPath)).mode & 0o777, 0o600)
+      const stopped = await run(app.env, 'stop').done
+      assert.equal(stopped.code, 0, stopped.stderr)
+      assert.match(stopped.stdout, /代理已停止/u)
+      await assert.rejects(stat(app.statePath), { code: 'ENOENT' })
+    }
+  },
+)
+
+test('start --foreground 保持前台运行并支持 stop', { timeout: 15_000 }, async (t) => {
+  const app = await fixture(t)
+  const server = await app.start('start', '--foreground')
+  assert.equal(server.child.exitCode, null)
+  assert.equal(await http(app.port), 200)
+  assert.equal((await run(app.env, 'stop').done).code, 0)
+  assert.equal((await server.done).code, 0)
 })
 
 test('端口冲突不覆盖正在运行的实例状态', { timeout: 20_000 }, async (t) => {
