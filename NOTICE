@@ -1,0 +1,12 @@
+# workbuddy-claude-cli — 来源与版权
+
+本项目从 dsh-plugin-lab/dsh-workbuddy-bridge 仓库中的 Claude CLI 本地代理整理为独立 npm 包。
+上游仓库：https://github.com/dsh-plugin-lab/dsh-workbuddy-bridge
+上游使用 MIT 许可证，其来源包括 corrinehu/dsh-workbuddy-connect。
+
+保留的上游版权：
+- Copyright (c) 2026 Corrine Hu
+- Copyright (c) 2026 zlZayn
+
+独立 CLI 打包与后续维护：ArtLjn。
+原 MIT 许可证及版权声明完整保留于 LICENSE。

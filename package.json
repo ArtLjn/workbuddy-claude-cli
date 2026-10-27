@@ -1,0 +1,55 @@
+{
+  "name": "workbuddy-claude-cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "支持 Claude CLI 接入 WorkBuddy 模型的本地 Anthropic Messages API 兼容代理",
+  "license": "MIT",
+  "author": "ArtLjn",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ArtLjn/workbuddy-claude-cli.git"
+  },
+  "homepage": "https://github.com/ArtLjn/workbuddy-claude-cli#readme",
+  "bugs": "https://github.com/ArtLjn/workbuddy-claude-cli/issues",
+  "keywords": [
+    "workbuddy",
+    "claude",
+    "claude-code",
+    "cli",
+    "anthropic",
+    "proxy"
+  ],
+  "bin": {
+    "workbuddy-claude-cli": "server.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "lib/*.mjs",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node server.mjs --check",
+    "test": "node --test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "npm run lint && npm run format:check && npm test",
+    "prepublishOnly": "npm run verify"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10"
+  }
+}
