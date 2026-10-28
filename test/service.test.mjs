@@ -113,6 +113,21 @@ test('前台启动、控制令牌校验、CLI 停止和重复停止', { timeout:
     403,
   )
   assert.equal(await http(app.port, { headers: { Authorization: 'Bearer test-proxy-token' } }), 200)
+  const chat = { path: '/v1/chat/completions', method: 'POST' }
+  assert.equal(await http(app.port, chat), 401)
+  assert.equal(await http(app.port, { ...chat, headers: { Host: 'example.com' } }), 403)
+  assert.equal(await http(app.port, { ...chat, headers: { Origin: 'https://example.com' } }), 403)
+  assert.equal(
+    await http(app.port, { ...chat, headers: { Authorization: 'Bearer test-proxy-token' } }),
+    415,
+  )
+  const models = await fetch(`http://127.0.0.1:${app.port}/v1/models`, {
+    headers: { Authorization: 'Bearer test-proxy-token' },
+  })
+  const catalog = await models.json()
+  assert.equal(catalog.object, 'list')
+  assert.equal(catalog.data[0].object, 'model')
+  assert.equal(catalog.data[0].type, 'model')
   const stopped = await run({ ...app.env, WORKBUDDY_PROXY_TOKEN: '' }, 'stop').done
   assert.equal(stopped.code, 0, stopped.stderr)
   assert.match(stopped.stdout, /代理已停止/u)

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 本地 Anthropic Messages API 代理：把 Claude Code 的请求转给 WorkBuddy。
+// 本地 Anthropic / OpenAI 兼容代理：把 Claude Code、Hermes 的请求转给 WorkBuddy。
 import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -8,10 +8,30 @@ import { collectMessage, estimateTokens, toOpenAIChat, translateStream } from '.
 import { VARIANT, config, debugLog, log } from './lib/config.mjs'
 import { credentialStatus, resolveCredential } from './lib/credential.mjs'
 import { startBackground } from './lib/daemon.mjs'
+import { handleChatCompletions } from './lib/chat-route.mjs'
+import {
+  readBody,
+  sendJson,
+  sendError,
+  statusForKind,
+  errorTypeForKind,
+  upstreamErrorMessage,
+} from './lib/http.mjs'
+import {
+  classifyToolUses,
+  emptySafeguardResults,
+  hasSafeguards,
+  unavailableSafeguardResults,
+} from './lib/safeguard.mjs'
 import { registerService, STOP_PATH, stopService, unregisterService } from './lib/service.mjs'
-import { UpstreamError, chatStream, ensureCatalog, knownModelIds } from './lib/upstream.mjs'
+import {
+  UpstreamError,
+  chatStream,
+  ensureCatalog,
+  knownModelIds,
+  resolveUpstreamModel,
+} from './lib/upstream.mjs'
 
-const BODY_LIMIT = 64 * 1024 * 1024
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
 
 function isObject(value) {
@@ -69,88 +89,6 @@ function authorized(req) {
   return candidates.some((candidate) => safeEqual(candidate, config.proxyToken))
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = []
-    let size = 0
-    req.on('data', (chunk) => {
-      size += chunk.length
-      if (size > BODY_LIMIT) {
-        reject(new Error('request body too large'))
-        req.destroy()
-        return
-      }
-      chunks.push(chunk)
-    })
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
-    req.on('error', reject)
-  })
-}
-
-function sendJson(res, status, body) {
-  const payload = JSON.stringify(body)
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': Buffer.byteLength(payload),
-  })
-  res.end(payload)
-}
-
-/** Anthropic 错误体；Claude Code 会按 type 和 HTTP 状态展示/重试。 */
-function sendError(res, status, type, message) {
-  sendJson(res, status, { type: 'error', error: { type, message } })
-}
-
-function statusForKind(kind) {
-  switch (kind) {
-    case 'session_dead':
-      return 401
-    case 'soft_rate':
-      return 429
-    case 'not_found':
-      return 404
-    case 'server':
-      return 502
-    default:
-      return 400
-  }
-}
-
-function errorTypeForKind(kind) {
-  switch (kind) {
-    case 'session_dead':
-      return 'authentication_error'
-    case 'soft_rate':
-      return 'rate_limit_error'
-    case 'not_found':
-      return 'not_found_error'
-    case 'server':
-      return 'api_error'
-    default:
-      return 'invalid_request_error'
-  }
-}
-
-function upstreamErrorMessage(error) {
-  if (error instanceof UpstreamError && error.kind === 'session_dead') {
-    return `${error.message}（请打开 WorkBuddy App 重新登录）`
-  }
-  return error.message
-}
-
-/** 请求模型不是 WorkBuddy id 时（例如 Claude 别名）映射到兜底模型。 */
-function resolveUpstreamModel(requested, catalog) {
-  const ids = new Set(catalog.map((model) => model.id))
-  const normalized = typeof requested === 'string' ? requested.replace(/\[1m\]$/iu, '').trim() : ''
-  if (normalized !== '' && ids.has(normalized)) return normalized
-  const fallback = ids.has(config.defaultModel) ? config.defaultModel : catalog[0]?.id
-  if (fallback !== undefined) {
-    if (normalized !== '') debugLog('模型映射:', normalized, '→', fallback)
-    return fallback
-  }
-  return normalized !== '' ? normalized : config.defaultModel
-}
-
 async function handleMessages(req, res) {
   let body
   try {
@@ -204,6 +142,37 @@ async function handleMessages(req, res) {
   const signal =
     timeout === undefined ? controller.signal : AbortSignal.any([controller.signal, timeout])
 
+  const safeguardRequested = config.safeguards && hasSafeguards(body)
+  if (safeguardRequested) debugLog('请求要求服务端安全判定')
+  const safeguardModel =
+    config.safeguardModel === ''
+      ? upstreamModel
+      : resolveUpstreamModel(config.safeguardModel, catalog)
+  // 代理停止时连带放弃判定；不接 controller.signal——客户端发完请求就断开是常态。
+  const safeguard = safeguardRequested
+    ? async (toolUses) => {
+        if (toolUses.length === 0) return emptySafeguardResults()
+        try {
+          return await classifyToolUses({
+            credential,
+            request: body,
+            toolUses,
+            model: safeguardModel,
+            originRequest: body,
+            signal: timeout,
+          })
+        } catch (error) {
+          // 默认日志级别也要留下原因：fail-closed 拦下 Bash 时，排查只能靠这一行。
+          log(
+            '安全判定失败（按 unavailable 拦截）:',
+            `模型=${safeguardModel}，超时上限=${config.safeguardTimeoutMs}ms`,
+            String(error),
+          )
+          return unavailableSafeguardResults()
+        }
+      }
+    : undefined
+
   let upstream
   try {
     upstream = await chatStream(credential, openai, signal)
@@ -219,6 +188,7 @@ async function handleMessages(req, res) {
         model: upstreamModel,
         inputTokens,
         emit: () => {},
+        safeguard,
       })
       sendJson(res, 200, message)
     } catch (error) {
@@ -238,7 +208,7 @@ async function handleMessages(req, res) {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
   try {
-    await translateStream(upstream.body, { model: upstreamModel, inputTokens, emit })
+    await translateStream(upstream.body, { model: upstreamModel, inputTokens, emit, safeguard })
   } catch (error) {
     const kind = error instanceof UpstreamError ? error.kind : 'server'
     emit('error', {
@@ -288,6 +258,9 @@ async function handleModels(req, res, pathname) {
       return
     }
     sendJson(res, 200, {
+      object: 'model',
+      created: 0,
+      owned_by: 'workbuddy',
       type: 'model',
       id: model.id,
       display_name: model.name,
@@ -296,12 +269,16 @@ async function handleModels(req, res, pathname) {
     return
   }
   const data = catalog.map((model) => ({
+    object: 'model',
+    created: 0,
+    owned_by: 'workbuddy',
     type: 'model',
     id: model.id,
     display_name: model.name,
     created_at: new Date(0).toISOString(),
   }))
   sendJson(res, 200, {
+    object: 'list',
     data,
     has_more: false,
     first_id: data[0]?.id ?? null,
@@ -353,6 +330,10 @@ async function handle(req, res, control) {
   }
   if (req.method === 'GET' && pathname.startsWith('/v1/models/')) {
     await handleModels(req, res, pathname)
+    return
+  }
+  if (req.method === 'POST' && pathname === '/v1/chat/completions') {
+    await handleChatCompletions(req, res)
     return
   }
   if (req.method === 'POST' && pathname === '/v1/messages') {
@@ -425,6 +406,7 @@ function startServer() {
     log(`  ANTHROPIC_BASE_URL=http://${config.host}:${config.port}`)
     log('  ANTHROPIC_AUTH_TOKEN=workbuddy-local')
     log(`  ANTHROPIC_MODEL=${config.defaultModel}`)
+    log(`Hermes / OpenAI 端点：http://${config.host}:${server.address().port}/v1`)
   })
   function shutdown() {
     if (shuttingDown) return
@@ -479,6 +461,19 @@ function printEnv() {
   console.log('export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"')
 }
 
+function printOpenAIEnv() {
+  const values = {
+    OPENAI_BASE_URL: `http://${config.host}:${config.port}/v1`,
+    OPENAI_API_KEY: config.proxyToken || 'workbuddy-local',
+    OPENAI_MODEL: config.defaultModel,
+  }
+  for (const [name, value] of Object.entries(values)) {
+    console.log(`export ${name}='${value.replaceAll("'", "'\\''")}'`)
+  }
+  console.log('export CUSTOM_BASE_URL="$OPENAI_BASE_URL"')
+  console.log('hermes chat --provider custom --model "$OPENAI_MODEL"')
+}
+
 const args = process.argv.slice(2)
 const command = args[0] ?? 'start'
 if (args.length > 1 && !(command === 'start' && args.length === 2 && args[1] === '--foreground')) {
@@ -488,6 +483,8 @@ if (args.length > 1 && !(command === 'start' && args.length === 2 && args[1] ===
   await printStatus()
 } else if (command === 'env' || command === '--print-env') {
   printEnv()
+} else if (command === 'env-openai') {
+  printOpenAIEnv()
 } else if (command === 'stop') {
   try {
     const stopped = await stopService()
@@ -497,12 +494,13 @@ if (args.length > 1 && !(command === 'start' && args.length === 2 && args[1] ===
     process.exitCode = 1
   }
 } else if (command === 'help' || command === '--help' || command === '-h') {
-  console.log('用法: wcc [start|stop|check|env|--foreground|--version|--help]')
+  console.log('用法: wcc [start|stop|check|env|env-openai|--foreground|--version|--help]')
   console.log('兼容命令: workbuddy-claude-cli')
   console.log('  start       后台启动本地代理（默认命令，可关闭终端）')
   console.log('  stop        停止本机运行中的代理')
   console.log('  check       打印登录状态与可用模型（也支持 --check）')
   console.log('  env         打印 Claude CLI 环境变量示例（也支持 --print-env）')
+  console.log('  env-openai  打印 OpenAI 环境变量及 Hermes 启动示例')
   console.log('  --version   打印版本号')
   console.log('  --foreground  前台运行，按 Ctrl+C 停止（也支持 start --foreground）')
 } else if (command === '--version' || command === '-v') {

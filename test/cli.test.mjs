@@ -35,6 +35,16 @@ test('CLI 新旧环境变量命令兼容', () => {
   assert.match(current.stdout, /export ANTHROPIC_DEFAULT_HAIKU_MODEL=/u)
 })
 
+test('CLI 输出 Hermes 使用的 OpenAI 端点和启动参数', () => {
+  const result = run('env-openai')
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /export OPENAI_BASE_URL=.*\/v1/u)
+  assert.match(result.stdout, /export OPENAI_API_KEY=/u)
+  assert.match(result.stdout, /export OPENAI_MODEL=/u)
+  assert.match(result.stdout, /export CUSTOM_BASE_URL="\$OPENAI_BASE_URL"/u)
+  assert.match(result.stdout, /hermes chat --provider custom --model/u)
+})
+
 test('CLI 拒绝未知命令和多余参数，避免意外启动服务', () => {
   for (const args of [['strat'], ['start', '--unknown'], ['stop', '--foreground']]) {
     const result = run(...args)

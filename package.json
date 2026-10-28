@@ -1,8 +1,8 @@
 {
   "name": "workbuddy-claude-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
-  "description": "支持 Claude CLI 接入 WorkBuddy 模型的本地 Anthropic Messages API 兼容代理",
+  "description": "支持 Claude CLI、Hermes 接入 WorkBuddy 模型的本地 Anthropic / OpenAI 兼容代理",
   "license": "MIT",
   "author": "ArtLjn",
   "repository": {
@@ -17,6 +17,8 @@
     "claude-code",
     "cli",
     "anthropic",
+    "openai",
+    "hermes",
     "proxy"
   ],
   "bin": {
